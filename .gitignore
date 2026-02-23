@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+
+# .NET
+*.user
+*.suo
+.vs/
+
+# Runtime output
+avl_records.json
+*.log
+nohup.out
+
+# OS
+.DS_Store
+Thumbs.db
