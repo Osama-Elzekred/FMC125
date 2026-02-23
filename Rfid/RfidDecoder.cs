@@ -67,8 +67,11 @@ public static class RfidDecoder
     /// <summary>Printable ASCII representation of the payload, or null if not ASCII-printable.</summary>
     public string? AsciiText { get; init; }
 
-    /// <summary>Best-effort extracted tag identifier (EPC/TID) as hex.</summary>
-    public string ExtractedTagHex { get; init; } = string.Empty;
+    /// <summary>Full tag payload as hex.</summary>
+    public string TagId { get; init; } = string.Empty;
+
+    /// <summary>Last 4 bytes of the tag payload — the Serial Number (matches SN printed on tag label).</summary>
+    public string SerialNumber { get; init; } = string.Empty;
 
     /// <summary>Strategy that produced the extracted tag value.</summary>
     public string ExtractionMethod { get; init; } = string.Empty;
@@ -85,7 +88,8 @@ public static class RfidDecoder
       Console.WriteLine($"║  Data Len    : {DeclaredDataLength} bytes");
       Console.WriteLine($"║  Raw HEX     : {RawHex}");
       Console.WriteLine($"║  ASCII       : {AsciiText ?? "(non-printable)"}");
-      Console.WriteLine($"║  Tag HEX     : {ExtractedTagHex}");
+      Console.WriteLine($"║  Tag ID      : {TagId}");
+      Console.WriteLine($"║  Serial No   : {SerialNumber}");
       Console.WriteLine($"║  Method      : {ExtractionMethod}");
       Console.WriteLine("╚══════════════════════════════════════════════════╝");
       Console.WriteLine();
@@ -117,21 +121,18 @@ public static class RfidDecoder
         DeclaredDataLength = 0,
         RawHex = Convert.ToHexString(ioValue),
         AsciiText = null,
-        ExtractedTagHex = Convert.ToHexString(ioValue),
+        TagId = Convert.ToHexString(ioValue),
+        SerialNumber = Convert.ToHexString(ioValue),
         ExtractionMethod = "malformed (no envelope header)"
       };
     }
 
-    byte packetIndex = ioValue[0];
-    byte declaredLen = ioValue[1];
-
-    // Guard: clamp to what is actually available after the 2-byte header.
-    int availablePayloadBytes = ioValue.Length - 2;
-    int payloadLen = Math.Min(declaredLen, availablePayloadBytes);
-
-    byte[] payload = new byte[payloadLen];
-    if (payloadLen > 0)
-      Buffer.BlockCopy(ioValue, 2, payload, 0, payloadLen);
+    // The FMC125 RS-232 Delimiter mode passes the raw bytes captured between
+    // the configured delimiters directly as the IO 109 value — no envelope.
+    // (The first bytes are part of the actual reader output, not a header.)
+    byte packetIndex = 0;
+    byte declaredLen = (byte)ioValue.Length;
+    byte[] payload = ioValue;
 
     // ── Decode the payload field ─────────────────────────────────────────
     string rawHex = Convert.ToHexString(payload);
@@ -152,7 +153,8 @@ public static class RfidDecoder
         DeclaredDataLength = declaredLen,
         RawHex = rawHex,
         AsciiText = ascii,
-        ExtractedTagHex = tagHex,
+        TagId = tagHex,
+        SerialNumber = ExtractSerialNumber(payload),
         ExtractionMethod = method
       };
     }
@@ -166,7 +168,8 @@ public static class RfidDecoder
         DeclaredDataLength = declaredLen,
         RawHex = rawHex,
         AsciiText = ascii,
-        ExtractedTagHex = tagHex,
+        TagId = tagHex,
+        SerialNumber = ExtractSerialNumber(payload),
         ExtractionMethod = method
       };
     }
@@ -180,7 +183,8 @@ public static class RfidDecoder
         DeclaredDataLength = declaredLen,
         RawHex = rawHex,
         AsciiText = ascii,
-        ExtractedTagHex = tagHex,
+        TagId = tagHex,
+        SerialNumber = ExtractSerialNumber(payload),
         ExtractionMethod = method
       };
     }
@@ -192,7 +196,8 @@ public static class RfidDecoder
       DeclaredDataLength = declaredLen,
       RawHex = rawHex,
       AsciiText = ascii,
-      ExtractedTagHex = rawHex,
+      TagId = rawHex,
+      SerialNumber = ExtractSerialNumber(payload),
       ExtractionMethod = "fallback (full payload)"
     };
   }
@@ -200,6 +205,13 @@ public static class RfidDecoder
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /// <summary>Extracts the last 4 bytes as the Serial Number (matches SN on physical tag label).</summary>
+  private static string ExtractSerialNumber(byte[] payload)
+  {
+    if (payload.Length < 4) return Convert.ToHexString(payload);
+    return Convert.ToHexString(payload, payload.Length - 4, 4);
+  }
 
   private static string? TryDecodeAsAscii(byte[] payload)
   {
@@ -268,7 +280,34 @@ public static class RfidDecoder
       }
     }
 
-    // Pattern B: SOF AA BB {1-byte length} {tag data} ...
+    // Pattern B: CF691 RS-232 output — payload starts with 0x01 (status/response byte)
+    // Observed real-device layout (after FMC125 envelope stripping):
+    //   01 25 00 00 00 04 15 63
+    //   ^  ^  |---UID (4 or 6 bytes)---|
+    //   |  └─ some CF691 field
+    //   └─ status byte = 0x01
+    // The UID is at the tail: try last 4 bytes first, then last 6 bytes.
+    if (payload.Length >= 6 && payload[0] == 0x01)
+    {
+      foreach (int tagLen in new[] { 4, 6 })
+      {
+        if (payload.Length >= tagLen)
+        {
+          int start = payload.Length - tagLen;
+          var candidate = new ReadOnlySpan<byte>(payload, start, tagLen);
+          bool allZero = true;
+          foreach (byte b in candidate) if (b != 0x00) { allZero = false; break; }
+          if (!allZero)
+          {
+            tagHex = Convert.ToHexString(payload, start, tagLen);
+            method = $"CF691 tail UID ({tagLen} bytes)";
+            return true;
+          }
+        }
+      }
+    }
+
+    // Pattern C: SOF AA BB {1-byte length} {tag data} ...
     if (payload.Length >= 4 && payload[0] == 0xAA && payload[1] == 0xBB)
     {
       int tagLen = payload[2];
@@ -298,8 +337,8 @@ public static class RfidDecoder
 
     if (payload.Length < 4) return false;
 
-    // Try every possible even-length window from the minimum (6) to max (12).
-    for (int tagLen = 12; tagLen >= 6; tagLen -= 2)
+    // Try every possible even-length window from the minimum (4) to max (12).
+    for (int tagLen = 12; tagLen >= 4; tagLen -= 2)
     {
       for (int start = 0; start + tagLen <= payload.Length; start++)
       {

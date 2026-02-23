@@ -84,7 +84,8 @@ public sealed class JsonLogger : IAsyncDisposable
         DeclaredDataLength = rfid.DeclaredDataLength,
         RawHex = rfid.RawHex,
         AsciiText = rfid.AsciiText,
-        ExtractedTagHex = rfid.ExtractedTagHex,
+        TagId = rfid.TagId,
+        SerialNumber = rfid.SerialNumber,
         ExtractionMethod = rfid.ExtractionMethod,
       },
     };
@@ -150,7 +151,8 @@ public sealed class JsonLogger : IAsyncDisposable
     public byte DeclaredDataLength { get; set; }
     public string RawHex { get; set; } = "";
     public string? AsciiText { get; set; }
-    public string ExtractedTagHex { get; set; } = "";
+    public string TagId { get; set; } = "";
+    public string SerialNumber { get; set; } = "";
     public string ExtractionMethod { get; set; } = "";
   }
 }
