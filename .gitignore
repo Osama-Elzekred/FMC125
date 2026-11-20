@@ -12,6 +12,9 @@ avl_records.json
 *.log
 nohup.out
 
+# Local deployment details
+serverCridentionals.txt
+
 # OS
 .DS_Store
 Thumbs.db
